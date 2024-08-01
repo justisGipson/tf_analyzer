@@ -15,17 +15,16 @@ type Analyzer struct {
 	customRules []CustomRule
 }
 
-func NewAnalyzer(filePath string, customRulesPath string) *Analyzer {
+func NewAnalyzer(filePath string, customRulesPath string) (*Analyzer, error) {
 	customRules, err := LoadCustomRules(customRulesPath)
 	if err != nil {
-		fmt.Printf("failed to load custom rules: %v", err)
-		return nil
+		return nil, fmt.Errorf("failed to load custom rules: %v", err)
 	}
 
 	return &Analyzer{
 		filePath:    filePath,
 		customRules: customRules,
-	}
+	}, nil
 }
 
 func (a *Analyzer) Analyze() error {

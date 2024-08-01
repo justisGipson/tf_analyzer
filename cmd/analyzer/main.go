@@ -17,7 +17,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	analyzer, err := analyzer.NewAnalyzer(*filePath, customRulesPath)
+	analyzer, err := analyzer.NewAnalyzer(*filePath, *customRulesPath)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
