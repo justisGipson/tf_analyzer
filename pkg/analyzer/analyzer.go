@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -9,10 +10,20 @@ import (
 )
 
 type Analyzer struct {
-	filePath    string
-	file        *hcl.File
-	body        *hclsyntax.Body
-	customRules []CustomRule
+	filePath       string
+	file           *hcl.File
+	body           *hclsyntax.Body
+	customRules    []CustomRule
+	modules        map[string]*Analyzer
+	issues         []Issue
+	variables      map[string]bool
+	usedVariables  map[string]bool
+	definedModules map[string]bool
+}
+
+type Issue struct {
+	Module  string
+	Message string
 }
 
 func NewAnalyzer(filePath string, customRulesPath string) (*Analyzer, error) {
@@ -22,8 +33,13 @@ func NewAnalyzer(filePath string, customRulesPath string) (*Analyzer, error) {
 	}
 
 	return &Analyzer{
-		filePath:    filePath,
-		customRules: customRules,
+		filePath:       filePath,
+		customRules:    customRules,
+		modules:        make(map[string]*Analyzer),
+		issues:         []Issue{},
+		variables:      make(map[string]bool),
+		usedVariables:  make(map[string]bool),
+		definedModules: make(map[string]bool),
 	}, nil
 }
 
@@ -38,16 +54,110 @@ func (a *Analyzer) Analyze() error {
 	a.file = file
 	a.body = file.Body.(*hclsyntax.Body)
 
-	a.applyCustomRules()
-
-	a.checkUnusedVariables()
-	a.checkMissingRequiredAttributes()
-	a.checkDuplicateResourceNames()
+	a.analyzeModule()
+	a.analyzeSubmodules()
+	a.analyzeVaiableUsage()
 
 	fmt.Println("Analyzing Terraform config...", a.filePath)
 
 	return nil
 }
+
+func (a *Analyzer) analyzeModule() {
+	// analyze the current module
+	a.checkUnusedVariables()
+	a.checkMissingRequiredAttributes()
+	a.checkDuplicateResourceNames()
+	a.applyCustomRules()
+	a.collectVariables()
+}
+
+func (a *Analyzer) analyzeSubmodules() {
+	for _, block := range a.body.Blocks {
+		if block.Type == "module" {
+			moduleName := block.Labels[0]
+			modulePath := filepath.Join(filepath.Dir(a.filePath), block.Labels[1])
+			submoduleAnalyzer, err := NewAnalyzer(modulePath, "")
+			if err != nil {
+				a.issues = append(a.issues, Issue{
+					Module:  moduleName,
+					Message: fmt.Sprintf("Failed to analyze submodule: %v", err),
+				})
+				continue
+			}
+			err = submoduleAnalyzer.Analyze()
+			if err != nil {
+				a.issues = append(a.issues, Issue{
+					Module:  moduleName,
+					Message: fmt.Sprintf("Failed to analyze submodule: %v", err),
+				})
+				continue
+			}
+
+			a.modules[moduleName] = submoduleAnalyzer
+			a.issues = append(a.issues, submoduleAnalyzer.issues...)
+		}
+
+		for _, submoduleAnalyzer := range a.modules {
+			a.usedVariables = mergeStringBoolMaps(a.usedVariables, submoduleAnalyzer.usedVariables)
+			a.definedModules = mergeStringBoolMaps(a.definedModules, submoduleAnalyzer.definedModules)
+	}
+}
+
+func (a *Analyzer) collectVariables() {
+	for _, block := range a.body.Blocks {
+		if block.Type == "variable" {
+			variableName := block.Labels[0]
+			a.variables[variableName] = true
+		}
+	}
+}
+
+func (a *Analyzer) analyzeVariableUsage() {
+	for _, attribute := range a.body.Attributes {
+		vars := attribute.Expr.Variables()
+		for _, v := range vars {
+			a.usedVariables[v.RootName()] = true
+		}
+	}
+
+	for _, block := range a.body.Blocks {
+		if block.Type == "module" {
+			moduleName := block.Labels[0]
+			a.definedModules[moduleName] = true
+		}
+	}
+
+	for variable := range a.variables {
+		if !a.usedVariables[variable] {
+			a.issues = append(a.issues, Issue{
+				Module:  a.filePath,
+				Message: fmt.Sprintf("Unused variable: %s", variable),
+			})
+		}
+	}
+
+	for usedVariable := range a.usedVariables {
+		if !a.variables[usedVariable] && !a.definedModules[usedVariable] {
+			a.issues = append(a.issues, Issue{
+				Module:  a.filePath,
+				Message: fmt.Sprintf("Used but undefined variable: %s", usedVariable),
+			})
+		}
+	}
+}
+
+func mergeStringBoolMaps(map1, map2 map[string]bool) map[string]bool {
+	mergedMap := make(map[string]bool)
+	for k, v := range map1 {
+		mergedMap[k] = v
+	}
+	for k, v := range map2 {
+		mergedMap[k] = v
+	}
+	return mergedMap
+}
+
 
 func (a *Analyzer) checkUnusedVariables() {
 	// Check for unused variables
@@ -140,5 +250,12 @@ func (a *Analyzer) applyCustomRules() {
 				}
 			}
 		}
+	}
+}
+
+func (a *Analyzer) PrintReport() {
+	fmt.Printf("Analysis report for %s\n", a.filePath)
+	for _, issue := range a.issues {
+		fmt.Printf("Module: %s - %s\n", issue.Module, issue.Message)
 	}
 }

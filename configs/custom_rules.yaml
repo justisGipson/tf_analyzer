@@ -1,0 +1,13 @@
+---
+rules:
+  - resource_type: aws_s3_bucket
+    attributes:
+      - acl
+      - server_side_encryption_configuration
+    validator: custom_validator_1
+
+  - resource_type: aws_instance
+    attributes:
+      - vpc_security_group_ids
+      - associate_public_ip_address
+    validator: custom_validator_2
